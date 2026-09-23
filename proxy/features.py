@@ -389,14 +389,26 @@ async def import_external_playlist(
     source = "wy"
     playlist_id = ""
 
-    if "music.163.com" in raw:
+    if raw.lower().startswith(("kw:", "kuwo:")):
+        source = "kw"
+        raw_id = re.sub(r"^(kw|kuwo):", "", raw, flags=re.I).strip()
+        m = re.search(r"(\d+)", raw_id)
+        if m:
+            playlist_id = m.group(1)
+    elif raw.lower().startswith(("wy:", "163:")):
         source = "wy"
-        m = re.search(r"id=(\d+)", raw)
+        raw_id = re.sub(r"^(wy|163):", "", raw, flags=re.I).strip()
+        m = re.search(r"(\d+)", raw_id)
         if m:
             playlist_id = m.group(1)
     elif "kuwo.cn" in raw:
         source = "kw"
         m = re.search(r"(\d+)", raw)
+        if m:
+            playlist_id = m.group(1)
+    elif "music.163.com" in raw:
+        source = "wy"
+        m = re.search(r"id=(\d+)", raw)
         if m:
             playlist_id = m.group(1)
     elif raw.isdigit():
@@ -1975,7 +1987,7 @@ def render_console_html(stats: dict, settings: dict, playlists: list, favorites_
                     <div class="form-group">
                         <label>输入外部歌单分享链接或纯数字歌单 ID：</label>
                         <div style="display:flex; gap:10px;">
-                            <input type="text" id="importUrl" placeholder="如：https://music.163.com/#/playlist?id=3778678 或 3778678">
+                            <input type="text" id="importUrl" placeholder="如：酷我链接/ID (如 kw:3678497566 或 kuwo.cn) 或 网易云链接">
                             <input type="text" id="importName" placeholder="自定义名称（选填）" style="max-width:200px;">
                             <button class="btn" style="flex-shrink:0;" onclick="doImport()">立即导入</button>
                         </div>
