@@ -3835,21 +3835,37 @@ async def fetch_online_playlist_detail(guid: str, pid: str = "", lx_server_url: 
     try:
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
             if source == "wy":
-                url = f"https://music.163.com/api/playlist/detail?id={pid}"
-                r = await client.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com"})
+                # 升级为 v6 接口获取完整 trackIds 配合 v3 批量接口，彻底解决只能抓 10 首的截断缺陷
+                url = "https://music.163.com/api/v6/playlist/detail"
+                r = await client.post(url, data={"id": str(pid), "n": "1000"}, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com"})
                 if r.status_code == 200:
-                    p_info = (r.json() or {}).get("result") or {}
-                    raw_list = p_info.get("tracks") or []
+                    p_info = (r.json() or {}).get("playlist") or {}
+                    track_ids = [str(x.get("id")) for x in p_info.get("trackIds", []) if x.get("id")]
+                    target_ids = track_ids[:300] if track_ids else []
+                    
+                    all_songs = []
+                    batch_size = 100
+                    for bi in range(0, len(target_ids), batch_size):
+                        batch = target_ids[bi:bi+batch_size]
+                        c_list = [{"id": int(x)} for x in batch]
+                        r_songs = await client.post("https://music.163.com/api/v3/song/detail", data={"c": json.dumps(c_list)}, headers={"User-Agent": "Mozilla/5.0"})
+                        if r_songs.status_code == 200:
+                            all_songs.extend((r_songs.json() or {}).get("songs", []))
+                    
+                    if not all_songs:
+                        all_songs = p_info.get("tracks") or []
+                        
                     tracks = []
-                    for item in raw_list:
+                    for item in all_songs:
                         songmid = str(item.get("id") or "").strip()
                         if not songmid:
                             continue
-                        artists = item.get("artists") or []
+                        artists = item.get("ar") or item.get("artists") or []
                         art_name = "/".join(a.get("name", "") for a in artists if a.get("name")) or "群星"
-                        album = (item.get("album") or {}).get("name") or ""
-                        cover = (item.get("album") or {}).get("picUrl") or ""
-                        dur = float(item.get("duration") or 240000) / 1000.0
+                        album_obj = item.get("al") or item.get("album") or {}
+                        album = album_obj.get("name") or ""
+                        cover = album_obj.get("picUrl") or ""
+                        dur = float(item.get("dt") or item.get("duration") or 240000) / 1000.0
                         tracks.append({
                             "id": f"lx:wy:{songmid}",
                             "source": "lx",

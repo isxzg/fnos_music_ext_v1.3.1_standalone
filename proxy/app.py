@@ -3226,6 +3226,46 @@ async def track_metadata(request: Request, subpath: str = ""):
     return JSONResponse(content=build_metadata_payload(guid, data))
 
 
+_COVER_CACHE_DIR = os.path.join(feats.STATE_DIR, "cover_cache")
+os.makedirs(_COVER_CACHE_DIR, exist_ok=True)
+
+async def _serve_cover_response(cover_url: str) -> Response:
+    if not cover_url or not str(cover_url).startswith("http"):
+        return Response(status_code=404)
+    url_str = await _resolve_kuwo_real_cover(cover_url)
+    h = hashlib.md5(url_str.encode("utf-8")).hexdigest()
+    cache_file = os.path.join(_COVER_CACHE_DIR, f"{h}.img")
+    headers = {
+        "Cross-Origin-Resource-Policy": "cross-origin",
+        "Cache-Control": "public, max-age=2592000, immutable",
+    }
+    if os.path.exists(cache_file) and os.path.getsize(cache_file) > 0:
+        try:
+            with open(cache_file, "rb") as f:
+                data = f.read()
+            media_type = "image/png" if data[:4] == bytes([137, 80, 78, 71]) else "image/jpeg"
+            return Response(content=data, media_type=media_type, headers=headers)
+        except Exception:
+            pass
+
+    try:
+        req_headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com"}
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(url_str, headers=req_headers)
+            if resp.status_code == 200 and resp.content:
+                data = resp.content
+                try:
+                    with open(cache_file + ".tmp", "wb") as f:
+                        f.write(data)
+                    os.replace(cache_file + ".tmp", cache_file)
+                except Exception:
+                    pass
+                media_type = resp.headers.get("content-type") or ("image/png" if data[:4] == bytes([137, 80, 78, 71]) else "image/jpeg")
+                return Response(content=data, media_type=media_type, headers=headers)
+    except Exception as e:
+        logger.warning("serve_cover_response fetch failed: %s", e)
+    return RedirectResponse(url_str, status_code=302)
+
 @app.api_route("/music/static/cover", methods=["GET", "HEAD"])
 @app.api_route("/music/static/cover/{subpath:path}", methods=["GET", "HEAD"])
 @app.api_route("/music/api/v1/static/cover", methods=["GET", "HEAD"])
@@ -3325,9 +3365,9 @@ async def static_cover(request: Request, subpath: str = ""):
         is_authed, user_guid, _ = await _probe_upstream_auth(request, upstream_client)
         user_pls = feats.load_user_custom_playlists(user_guid if is_authed else "shared")
         for pl in user_pls:
-            if pl.get("guid") == guid and pl.get("cover_url"):
-                real_cov = await _resolve_kuwo_real_cover(pl["cover_url"])
-                return RedirectResponse(real_cov, status_code=302)
+            if pl.get("guid") == guid and (pl.get("cover_url") or pl.get("coverUrl")):
+                cov = pl.get("cover_url") or pl.get("coverUrl")
+                return await _serve_cover_response(cov)
 
     if not is_online_guid(guid):
         return await forward_to_upstream(request, get_upstream_client(request.app))
@@ -3386,14 +3426,13 @@ async def static_cover(request: Request, subpath: str = ""):
         except Exception as e:
             logger.debug("netease cover enrich failed for %s: %s", guid, e)
 
-    # 4. 酷我 URL 自动解析为真实的 JPEG 二进制地址，彻底杜绝返回纯文本导致裂图
+    # 4. 真实二进制流返回图片，彻底解决 COEP 跨域阻断与裂图
     if cover:
-        real_cover = await _resolve_kuwo_real_cover(cover)
-        return RedirectResponse(real_cover, status_code=302)
+        return await _serve_cover_response(cover)
 
-    # 5. 兜底返回高质感沉浸式音乐艺术封面，杜绝客户端裂图或灰占位
+    # 5. 兜底返回高质感沉浸式音乐艺术封面
     chosen = fallback_covers[cur_time_bucket % len(fallback_covers)]
-    return RedirectResponse(chosen, status_code=302)
+    return await _serve_cover_response(chosen)
 
 
 # === online favorites ===
@@ -3912,11 +3951,13 @@ async def playlist_list(request: Request):
                     })
         user_pls = feats.load_user_custom_playlists(user_guid)
         for upl in user_pls:
+            cid = upl.get("guid")
             injected.append({
-                "guid": upl.get("guid"),
+                "guid": cid,
                 "name": upl.get("name"),
                 "desc": upl.get("desc") or f"导入歌单 · 共 {upl.get('trackCount', 0)} 首",
-                "coverId": upl.get("guid"),
+                "coverId": cid,
+                "coverUrl": f"/music/api/v1/static/cover?coverId={cid}",
                 "cover_url": upl.get("cover_url", ""),
                 "trackCount": upl.get("trackCount", 0),
                 "isSystem": False,
@@ -4037,7 +4078,9 @@ async def playlist_detail(request: Request):
             user_pls = feats.load_user_custom_playlists(u)
             for pl in user_pls:
                 if pl.get("guid") == guid:
-                    return JSONResponse(content={"code": 0, "msg": "ok", "data": pl})
+                    pl_resp = dict(pl)
+                    pl_resp["coverUrl"] = f"/music/api/v1/static/cover?coverId={guid}"
+                    return JSONResponse(content={"code": 0, "msg": "ok", "data": pl_resp})
         return JSONResponse(content={"code": -1, "msg": "歌单未找到"})
 
     if not dailyrec.is_daily_playlist_guid(guid):
