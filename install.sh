@@ -89,7 +89,7 @@ fi
 echo -e "\033[34m[*] 正在注册并启动 systemd 系统守护服务...\033[0m"
 /usr/bin/python3 "${TARGET_DIR}/proxy/takeover.py" render-unit --base "${TARGET_DIR}" > /etc/systemd/system/fnmusic-ext.service
 
-cat << 'EOF' > /etc/systemd/system/fnmusic-watchdog.service
+cat << EOF > /etc/systemd/system/fnmusic-watchdog.service
 [Unit]
 Description=fnmusic-ext frontend & socket watchdog
 After=network.target fnmusic-ext.service

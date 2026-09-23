@@ -9,12 +9,18 @@ fnmusic-ext 增强特性模块：
    - 深度对标 LX MUSIC Web 布局：显示-外观设置、播放与逻辑控制、实时运行日志等
 """
 
+import os
 import asyncio
 import hashlib
 import json
 import logging
 
-LX_AUTH_HEADER = {"User-Agent": "Mozilla/5.0"}
+LX_DEFAULT_SERVER_URL = os.environ.get("FNMUSIC_LX_SERVER_URL", "http://127.0.0.1:9527")
+LX_AUTH_HEADER = {
+    "User-Agent": "Mozilla/5.0",
+    "x-user-name": "admin",
+    "x-user-token": "lx_tk_fnmusic_ext_2026",
+}
 
 import os
 import re
@@ -4038,13 +4044,13 @@ async def fetch_online_playlist_detail(guid: str, pid: str = "", lx_server_url: 
             pass
     return playlist_data
 
-async def get_custom_sources_list(lx_server_url: str = "http://127.0.0.1:9528") -> list[dict]:
+async def get_custom_sources_list(lx_server_url: str = "http://127.0.0.1:9527") -> list[dict]:
     """获取所有已导入的落雪自定义音源列表"""
     # 1. 优先调用 9528 API
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
             resp = await client.get(
-                f"{lx_server_url}/api/custom-source/list?username=_open",
+                f"{lx_server_url}/api/custom-source/list?username=admin",
                 headers=LX_AUTH_HEADER,
             )
             if resp.status_code == 200:
@@ -4068,7 +4074,7 @@ async def get_custom_sources_list(lx_server_url: str = "http://127.0.0.1:9528") 
     return []
 
 
-async def toggle_custom_source(source_id: str, enabled: bool, lx_server_url: str = "http://127.0.0.1:9528") -> dict:
+async def toggle_custom_source(source_id: str, enabled: bool, lx_server_url: str = "http://127.0.0.1:9527") -> dict:
     """启用/停用指定的落雪自定义源"""
     # 同步调用 9528 API
     try:
@@ -4076,7 +4082,7 @@ async def toggle_custom_source(source_id: str, enabled: bool, lx_server_url: str
             await client.post(
                 f"{lx_server_url}/api/custom-source/toggle",
                 headers={**LX_AUTH_HEADER, "Content-Type": "application/json"},
-                json={"id": source_id, "enabled": enabled, "username": "_open"},
+                json={"id": source_id, "enabled": enabled, "username": "admin"},
             )
             await client.post(
                 f"{lx_server_url}/api/custom-source/toggle",
@@ -4122,7 +4128,7 @@ async def toggle_custom_source(source_id: str, enabled: bool, lx_server_url: str
     return {"ok": True, "msg": f"音源已{'启用' if enabled else '停用'}"}
 
 
-async def delete_custom_source(source_id: str, lx_server_url: str = "http://127.0.0.1:9528") -> dict:
+async def delete_custom_source(source_id: str, lx_server_url: str = "http://127.0.0.1:9527") -> dict:
     """删除指定的落雪自定义源"""
     # 尝试调用 9528 API
     try:
@@ -4130,7 +4136,7 @@ async def delete_custom_source(source_id: str, lx_server_url: str = "http://127.
             await client.post(
                 f"{lx_server_url}/api/custom-source/delete",
                 headers={**LX_AUTH_HEADER, "Content-Type": "application/json"},
-                json={"id": source_id, "username": "_open"},
+                json={"id": source_id, "username": "admin"},
             )
             await client.post(
                 f"{lx_server_url}/api/custom-source/delete",
@@ -4163,7 +4169,7 @@ async def delete_custom_source(source_id: str, lx_server_url: str = "http://127.
     return {"ok": True, "msg": "音源已成功移除"}
 
 
-async def import_custom_source_from_url(url: str, lx_server_url: str = "http://127.0.0.1:9528") -> dict:
+async def import_custom_source_from_url(url: str, lx_server_url: str = "http://127.0.0.1:9527") -> dict:
     """通过 URL 在线拉取并导入落雪音源脚本"""
     url = url.strip()
     if not url.startswith("http://") and not url.startswith("https://"):
@@ -4199,7 +4205,7 @@ async def import_custom_source_from_url(url: str, lx_server_url: str = "http://1
     return await upload_custom_source_content(content, filename=filename, source_url=url, lx_server_url=lx_server_url)
 
 
-async def upload_custom_source_content(content: str, filename: str = "", source_url: str = "", lx_server_url: str = "http://127.0.0.1:9528") -> dict:
+async def upload_custom_source_content(content: str, filename: str = "", source_url: str = "", lx_server_url: str = "http://127.0.0.1:9527") -> dict:
     """保存并注册音源脚本内容"""
     if not content or len(content.strip()) < 50:
         return {"ok": False, "msg": "音源脚本内容为空或过短"}
@@ -4264,7 +4270,7 @@ async def upload_custom_source_content(content: str, filename: str = "", source_
     }
 
 
-async def reload_custom_sources(lx_server_url: str = "http://127.0.0.1:9528") -> dict:
+async def reload_custom_sources(lx_server_url: str = "http://127.0.0.1:9527") -> dict:
     """重启落雪容器 lx-sync-server 以确保全部自定义音源重新加载"""
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -4282,7 +4288,7 @@ async def reload_custom_sources(lx_server_url: str = "http://127.0.0.1:9528") ->
 async def resolve_url_by_custom_source(
     song_info: dict,
     quality: str = "flac",
-    lx_server_url: str = "http://127.0.0.1:9528",
+    lx_server_url: str = "http://127.0.0.1:9527",
 ) -> dict | None:
     """
     通过 9528 落雪自定义源引擎（UserApi）解析真实无损直链。
@@ -4311,13 +4317,13 @@ async def resolve_url_by_custom_source(
             },
             "quality": quality,
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(
                 f"{lx_server_url}/api/music/url",
                 headers={
                     **LX_AUTH_HEADER,
                     "Content-Type": "application/json",
-                    "x-user-name": "_open",
+                    "x-user-name": "admin",
                 },
                 json=payload,
             )
@@ -4326,7 +4332,7 @@ async def resolve_url_by_custom_source(
                 if isinstance(data, dict):
                     raw_url = str(data.get("url") or "").strip()
                     # 严格校验：排除假直链与空链接（例如 http://music.nxinxz.com/None）
-                    if raw_url and not raw_url.endswith("/None") and "/None?" not in raw_url and "null" not in raw_url:
+                    if (raw_url.startswith("http://") or raw_url.startswith("https://")) and not raw_url.endswith("/None") and "/None?" not in raw_url and "null" not in raw_url and "失败" not in raw_url:
                         return {
                             "url": raw_url,
                             "format": data.get("type") or "flac",

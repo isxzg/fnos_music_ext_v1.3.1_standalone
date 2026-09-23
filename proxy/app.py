@@ -70,9 +70,9 @@ _HOME = dailyrec.home_dir()
 CONF = {
     "musicdl_url": os.environ.get("FNMUSIC_MUSICDL_URL", "http://127.0.0.1:8768"),
     "musicbox_url": os.environ.get("FNMUSIC_MUSICBOX_URL", "http://127.0.0.1:8770"),
-    "lx_url": os.environ.get("FNMUSIC_LX_URL", "http://127.0.0.1:8772"),
+    "lx_url": os.environ.get("FNMUSIC_LX_URL", "http://127.0.0.1:9527"),
     "musicdl_enabled": os.environ.get("FNMUSIC_MUSICDL_ENABLED", "false").lower() in ("true", "1", "yes"),
-    "netease_enabled": os.environ.get("FNMUSIC_NETEASE_ENABLED", "false").lower() in ("true", "1", "yes"),
+    "netease_enabled": os.environ.get("FNMUSIC_NETEASE_ENABLED", "true").lower() in ("true", "1", "yes"),
     "lx_enabled": os.environ.get("FNMUSIC_LX_ENABLED", "true").lower() in ("true", "1", "yes"),
     "lx_search_limit": int(os.environ.get("FNMUSIC_LX_SEARCH_LIMIT", "20")),
     "lx_quality": os.environ.get("FNMUSIC_LX_QUALITY", "lossless"),
@@ -190,12 +190,7 @@ def _search_scope(request: Request) -> str:
 
 
 def _source_enabled(guid: str) -> bool:
-    source = source_from_online_guid(guid)
-    if not CONF.get({"netease": "netease_enabled", "lx": "lx_enabled"}.get(source, "musicdl_enabled"), True):
-        return False
-    if source not in ("netease", "lx") and CONF.get("online_sources"):
-        selected = {name.strip().lower().removesuffix("musicclient") for name in str(CONF["online_sources"]).split(",")}
-        return source.lower() in selected
+    # 全局放开所有在线源，均支持原生解析与跨源智能兜底
     return True
 
 
@@ -595,7 +590,10 @@ def build_online_track(item: dict) -> dict:
         file_size = max(file_size, int(duration_s * 120000) if duration_s > 0 else 31457280)
     cover = str(item.get("cover_url") or "")
     # 路径带真实后缀，飞牛 ll() 用 path 解析 extension；封面走 guid 以便 /static/cover 拦截
-    spec_path = f"online/{src}/{guid}.{play_format}"
+    clean_title = re.sub(r'[\\/*?:"<>|]', '', title).strip() or "未知歌曲"
+    clean_artist = re.sub(r'[\\/*?:"<>|]', '', artist).strip()
+    name_part = f"{clean_artist} - {clean_title}" if clean_artist else clean_title
+    spec_path = f"/vol2/1000/Bak/Music/{name_part}.{play_format}"
 
     artists_list = [{"name": artist, "guid": f"{guid}:artist"}] if artist else []
     album_obj = {
@@ -798,13 +796,13 @@ def write_audio_tags(path: str, title: str, artist: str = "", album: str = "") -
 
 
 def detect_library_dir() -> str:
-    """优先环境变量，否则使用本地可靠缓存目录，避免云盘挂载点报错。"""
-    explicit = str(CONF.get("library_dir") or "").strip()
-    if explicit:
-        return explicit
-    local_cache_lyric = os.path.join(CONF.get("cache_dir", os.path.join(_HOME, "cache")), "lyrics")
-    os.makedirs(local_cache_lyric, exist_ok=True)
-    return local_cache_lyric
+    """全局指向用户真实音乐库目录，实现边听边存落盘。"""
+    lib_dir = str(CONF.get("library_dir") or "/vol2/1000/Bak/Music").strip()
+    try:
+        os.makedirs(lib_dir, exist_ok=True)
+    except Exception:
+        pass
+    return lib_dir
 
 
 def iter_media_dirs() -> list[str]:
@@ -1465,7 +1463,7 @@ async def resolve_lx_url(client: httpx.AsyncClient, song_id: str, track_info: di
             src = parts[0]
             identifier = ":".join(parts[1:])
             cfg = feats.load_settings()
-            lx_server = cfg.get("lx_server_url") or "http://127.0.0.1:9528"
+            lx_server = cfg.get("lx_server_url") or "http://127.0.0.1:9527"
             cached_info = None
             try:
                 info_resp = await client.get("/api/v1/track/info", params={"id": song_id}, timeout=2.5)
@@ -1557,32 +1555,7 @@ async def resolve_lx_url(client: httpx.AsyncClient, song_id: str, track_info: di
     except Exception as e:
         logger.debug("custom source resolve attempt failed: %s", e)
 
-    # 2. 回退至原有链路
-    qualities = []
-    primary = str(CONF.get("lx_quality") or "lossless").strip()
-    if primary:
-        qualities.append(primary)
-    for fallback in ("high", "standard"):
-        if fallback not in qualities:
-            qualities.append(fallback)
-
-    for q in qualities:
-        try:
-            r = await client.get(
-                "/api/v1/track/url",
-                params={"id": song_id, "quality": q},
-                timeout=15.0,
-            )
-            if r.status_code == 200:
-                data = r.json()
-                if isinstance(data, dict) and data.get("ok") is not False:
-                    inner = data.get("data")
-                    if isinstance(inner, dict) and inner.get("url"):
-                        _RESOLVE_CACHE[song_id] = (now, inner)
-                        return inner
-        except Exception as e:
-            logger.warning("resolve_lx_url error for %s (quality=%s): %s", song_id, q, e)
-
+    # 2. 回退优化：彻底解耦旧版 8772/9528，落雪音源解析失败时直接进入原生故障转移
     # 3. 故障转移至网易云音乐 API / 酷我 API 直链解析 (当未导入落雪源或落雪源全部停用时，无缝直连)
     try:
         t_name = (track_info or {}).get("title") or (track_info or {}).get("name") or (cached_info or {}).get("title") or (cached_info or {}).get("name") or ""
@@ -1986,8 +1959,13 @@ async def ext_livez():
 async def ext_healthz(request: Request):
     async def probe(name: str, client: httpx.AsyncClient, path: str) -> dict:
         try:
-            response = await asyncio.wait_for(client.get(path, timeout=2.0), timeout=2.4)
-            healthy = response.status_code < 500 if name == "upstream" else response.status_code == 200
+            if name == "lxmusic":
+                headers = {"x-frontend-auth": "Zxh123456"}
+                response = await asyncio.wait_for(client.get("/api/status", headers=headers, timeout=2.0), timeout=2.4)
+                healthy = response.status_code == 200
+            else:
+                response = await asyncio.wait_for(client.get(path, timeout=2.0), timeout=2.4)
+                healthy = response.status_code < 500 if name == "upstream" else response.status_code == 200
             detail: dict = {"status": "ok" if healthy else "fail", "http_status": response.status_code}
             if name != "upstream" and healthy:
                 try:
@@ -2530,6 +2508,109 @@ async def _recover_source(request: Request, guid: str, entry: dict | None) -> bo
         return False
 
 
+
+_SAVING_GUIDS = set()
+
+async def _bg_save_track(guid: str, url: str, headers: dict, ext: str | None, info: dict | None):
+    if not guid or guid in _SAVING_GUIDS:
+        return
+    _SAVING_GUIDS.add(guid)
+    try:
+        dest_dir = detect_library_dir()
+        os.makedirs(dest_dir, exist_ok=True)
+
+        title = str((info or {}).get("title") or (info or {}).get("name") or "").strip()
+        artist = str((info or {}).get("artist") or (info or {}).get("singer") or "").strip()
+        album = str((info or {}).get("album") or "").strip()
+
+        # 若缺失元数据，主动向源端拉取补全真实歌名和歌手
+        if not title or title.startswith("online:") or title.startswith("netease:"):
+            sub_id = song_id_from_online_guid(guid).split(":")[-1]
+            if "netease" in guid:
+                try:
+                    async with httpx.AsyncClient(timeout=3.0) as detail_cli:
+                        r_d = await detail_cli.get(f"https://music.163.com/api/song/detail/?id={sub_id}&ids=[{sub_id}]", headers={"User-Agent": "Mozilla/5.0"})
+                        if r_d.status_code == 200:
+                            s_list = (r_d.json() or {}).get("songs") or []
+                            if s_list:
+                                title = str(s_list[0].get("name") or "")
+                                artist = " & ".join(filter(None, [a.get("name", "") for a in (s_list[0].get("artists") or [])]))
+                                album = str((s_list[0].get("album") or {}).get("name") or "")
+                except Exception:
+                    pass
+            elif "kw" in guid or "lx" in guid:
+                try:
+                    async with httpx.AsyncClient(timeout=3.0) as lx_info_cli:
+                        r_info = await lx_info_cli.get(f"http://127.0.0.1:9527/api/music/info", params={"source": "kw", "songmid": sub_id}, headers={"x-user-name": "admin", "x-user-token": "lx_tk_fnmusic_ext_2026"})
+                        if r_info.status_code == 200:
+                            info_d = r_info.json().get("data") or {}
+                            title = str(info_d.get("name") or "")
+                            artist = str(info_d.get("singer") or "")
+                except Exception:
+                    pass
+        if not title:
+            title = song_id_from_online_guid(guid).replace(":", "_")
+
+        clean_title = re.sub(r'[\\/*?:"<>|]', '', title).strip() or "未知歌曲"
+        clean_artist = re.sub(r'[\\/*?:"<>|]', '', artist).strip()
+        basename = f"{clean_artist} - {clean_title}" if clean_artist else clean_title
+
+        audio_ext = ext or (info or {}).get("ext") or "flac"
+        dest_file = os.path.join(dest_dir, f"{basename}.{audio_ext}")
+        dest_lrc = os.path.join(dest_dir, f"{basename}.lrc")
+
+        # 目标已存在且文件完整则跳过
+        if os.path.exists(dest_file) and os.path.getsize(dest_file) > 500 * 1024:
+            remember_media_path(guid, dest_file)
+            return
+
+        part_file = f"{dest_file}.{uuid4().hex[:6]}.part"
+        req_headers = dict(headers or {})
+        if "user-agent" not in {k.lower() for k in req_headers}:
+            req_headers["User-Agent"] = "okhttp/3.10.0"
+
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as dl_cli:
+            async with dl_cli.stream("GET", url, headers=req_headers) as dl_resp:
+                if dl_resp.status_code == 200:
+                    with open(part_file, "wb") as f_part:
+                        async for chunk in dl_resp.aiter_bytes(chunk_size=65536):
+                            f_part.write(chunk)
+                    if os.path.exists(part_file) and os.path.getsize(part_file) > 1024:
+                        os.replace(part_file, dest_file)
+                        remember_media_path(guid, dest_file)
+                        try:
+                            os.chown(dest_file, 1000, 1001)
+                            os.chmod(dest_file, 0o666)
+                        except Exception:
+                            pass
+                        write_audio_tags(dest_file, title, artist, album)
+                        logger.info("Auto-cached song to library: %s", dest_file)
+
+        # 歌词同步保存
+        if not os.path.exists(dest_lrc) or os.path.getsize(dest_lrc) == 0:
+            lrc_text = str((info or {}).get("lyric") or (info or {}).get("lrc") or "")
+            if lrc_text.strip():
+                try:
+                    with open(dest_lrc, "w", encoding="utf-8") as f_lrc:
+                        f_lrc.write(lrc_text.strip())
+                    os.chown(dest_lrc, 1000, 1001)
+                    os.chmod(dest_lrc, 0o666)
+                except Exception:
+                    pass
+
+        # 触发飞牛曲库扫描更新
+        try:
+            async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds="/var/run/trim_music_upstream.socket"), timeout=3.0) as scan_cli:
+                await scan_cli.post("http://localhost/music/api/v1/shared-library/scan-all")
+        except Exception:
+            pass
+
+    except Exception as e_bg:
+        logger.warning("Background auto-save failed for %s: %s", guid, e_bg)
+    finally:
+        _SAVING_GUIDS.discard(guid)
+
+
 async def _open_online_stream(request: Request, guid: str, range_header: str | None):
     """Resolve and read first bytes before committing HTTP headers to the client."""
     source = source_from_online_guid(guid)
@@ -2542,22 +2623,58 @@ async def _open_online_stream(request: Request, guid: str, range_header: str | N
     ext = None
     try:
         if source in ("netease", "lx"):
+            url = None
             if source == "netease":
                 url = await resolve_netease_url(get_musicbox_client(request.app), song_id_from_online_guid(guid).split(":")[-1])
-                if not url:
-                    return None
             else:
                 resolved = await resolve_lx_url(get_lx_client(request.app), song_id_from_online_guid(guid), track_info=info)
-                if not resolved:
-                    return None
-                url = resolved["url"]
-                ext = resolved.get("ext")
-                for key, value in (resolved.get("headers") or {}).items():
-                    if key.lower() in ("referer", "user-agent"):
-                        headers[key] = str(value)
-                # 针对酷我等音源防盗链防护：若没有提供 UA，补上标准移动端 UA 避免 403
-                if "user-agent" not in {k.lower() for k in headers}:
-                    headers["User-Agent"] = "okhttp/3.10.0"
+                if resolved:
+                    url = resolved.get("url")
+                    ext = resolved.get("ext")
+                    for key, value in (resolved.get("headers") or {}).items():
+                        if key.lower() in ("referer", "user-agent"):
+                            headers[key] = str(value)
+
+            # 跨源万能兜底：网易云/落雪单源无版权或失效时，自动跨源至酷我长青无损源秒播
+            if not url:
+                t_title = (info or {}).get("title") or (info or {}).get("name") or ""
+                t_artist = (info or {}).get("artist") or (info or {}).get("singer") or ""
+                if not t_title and source == "netease":
+                    sub_id = song_id_from_online_guid(guid).split(":")[-1]
+                    try:
+                        async with httpx.AsyncClient(timeout=3.0) as detail_cli:
+                            r_d = await detail_cli.get(f"https://music.163.com/api/song/detail/?id={sub_id}&ids=[{sub_id}]", headers={"User-Agent": "Mozilla/5.0"})
+                            if r_d.status_code == 200:
+                                s_list = (r_d.json() or {}).get("songs") or []
+                                if s_list:
+                                    t_title = str(s_list[0].get("name") or "")
+                                    t_artist = " / ".join(filter(None, [a.get("name", "") for a in (s_list[0].get("artists") or [])]))
+                    except Exception:
+                        pass
+                if t_title:
+                    try:
+                        kw_match = await feats.search_kuwo_song(t_title, t_artist)
+                        if kw_match and kw_match.get("rid"):
+                            kw_meta = {
+                                "id": kw_match["rid"],
+                                "songmid": kw_match["rid"],
+                                "source": "kw",
+                                "name": kw_match.get("title", t_title),
+                                "singer": kw_match.get("artist", t_artist),
+                            }
+                            kw_res = await feats.resolve_url_by_custom_source(kw_meta, quality="flac", lx_server_url=feats.LX_DEFAULT_SERVER_URL)
+                            if kw_res and kw_res.get("url"):
+                                url = kw_res["url"]
+                                ext = kw_res.get("format", "flac")
+                                logger.info("Cross-source failover success for %s (%s - %s) -> Kuwo FLAC", guid, t_title, t_artist)
+                    except Exception as e_failover:
+                        logger.warning("Cross-source failover error for %s: %s", guid, e_failover)
+
+            if not url:
+                return None
+
+            if "user-agent" not in {k.lower() for k in headers}:
+                headers["User-Agent"] = "okhttp/3.10.0"
             if info is None:
                 try:
                     info = await asyncio.wait_for(_fetch_online_info(request, guid), timeout=0.75)
@@ -2586,6 +2703,12 @@ async def _open_online_stream(request: Request, guid: str, range_header: str | N
             return None
         result = (resp, owned, ext, info, chunks, first)
         resp = owned = None  # transfer ownership to response iterator
+        # 边听边存：后台派发完整音源落盘到本地曲库
+        try:
+            if url:
+                asyncio.create_task(_bg_save_track(guid, url, headers, ext, info))
+        except Exception:
+            pass
         return result
     finally:
         if resp:
@@ -2660,7 +2783,7 @@ async def stream_track(request: Request):
     # Byte offsets are encoding-specific: do not cross sources on seek/probe.
     if should_cache(range_header) and item and request.query_params.get("_ext_rendition") != "1":
         candidates += [online_guid_from_item(x) for x in item.get("_alternatives", []) if _same_recording(item, x)]
-    deadline = asyncio.get_running_loop().time() + 12.0
+    deadline = asyncio.get_running_loop().time() + 30.0
     for candidate in list(dict.fromkeys(candidates))[:3]:
         if not _source_enabled(candidate):
             continue
@@ -2670,7 +2793,7 @@ async def stream_track(request: Request):
                 break
             try:
                 # 留足 8 秒超时预算，避免落雪自定义源多层探测时被 4.0s 提前截断导致失败
-                opened = await asyncio.wait_for(_open_online_stream(request, candidate, range_header), timeout=min(8.0, remaining))
+                opened = await asyncio.wait_for(_open_online_stream(request, candidate, range_header), timeout=min(15.0, remaining))
             except Exception as exc:
                 logger.warning("Stream startup failed for %s: %s", candidate, type(exc).__name__)
                 opened = None
@@ -4569,7 +4692,7 @@ async def ext_api_online_playlists_list(request: Request):
         page = 1
     
     cfg = feats.load_settings()
-    lx_server = cfg.get("lx_server_url") or "http://127.0.0.1:9528"
+    lx_server = cfg.get("lx_server_url") or "http://127.0.0.1:9527"
     items = await feats.fetch_online_playlists_list(source=source, page=page, tag_id=tag_id, lx_server_url=lx_server)
     return JSONResponse(content={"code": 0, "msg": "ok", "data": {"list": items, "page": page, "source": source}})
 
@@ -4987,7 +5110,7 @@ async def api_get_now_playing():
 # 🛠️ 落雪管理代理接口 (/music/ext/api/lx/*)
 # =========================================================================
 
-LX_BASE_API = "http://127.0.0.1:9528"
+LX_BASE_API = "http://127.0.0.1:9527"
 LX_AUTH = {"x-frontend-auth": os.environ.get("FNMUSIC_AUTH_TOKEN", "")}
 
 @app.get("/music/ext/api/lx/config")
