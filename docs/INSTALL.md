@@ -19,7 +19,7 @@
 
 克隆项目并进入根目录赋予执行权限：
 ```bash
-git clone https://github.com/javycoder/fnos_music_ext.git fnmusic_ext
+git clone https://github.com/isxzg/fnos_music_ext_v1.3.1_standalone.git fnmusic_ext
 cd fnmusic_ext
 chmod +x install.sh extend.sh restore.sh proxy/run_proxy.sh
 ```

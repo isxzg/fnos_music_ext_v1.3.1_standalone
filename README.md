@@ -80,17 +80,16 @@ fnos_music_ext/
 2. 已在 fnOS「应用中心」安装并启动了官方 **【飞牛音乐】** 应用；
 3. 系统具备基本的 `python3`、`python3-venv` 与 `curl`。
 
-### 一键安装步骤
-1. 将插件压缩包 `fnos_music_ext_v1.3.1_standalone.tar.gz` 上传或解压至目标 NAS（如 `/vol1/1000/beifen/fnos_plug/`）；
-2. 进入插件目录，执行一键安装脚本：
-   ```bash
-   sudo bash install.sh
-   ```
-3. 脚本会自动完成以下操作：
-   - 探测飞牛官方音乐服务目录；
-   - 建立独立的 Python 虚拟运行环境并安装轻量依赖；
-   - 注入前端全量定制补丁与高清图标；
-   - 注册并启动 `fnmusic-ext.service` 与 `fnmusic-watchdog.service` 系统守护服务。
+### 一键安装步骤（推荐）
+在任意已安装官方飞牛音乐的 fnOS 终端中，直接运行以下命令从本仓库拉取并一键安装：
+```bash
+git clone https://github.com/isxzg/fnos_music_ext_v1.3.1_standalone.git fnmusic_ext
+cd fnmusic_ext
+sudo bash install.sh
+```
+
+或者下载项目中的 `fnos_music_ext_v1.3.1_standalone.zip` 解压后进入目录执行 `sudo bash install.sh`。
+
 4. 安装完成后，在电脑或手机浏览器打开飞牛音乐，按 **Ctrl + F5** 强制刷新，即可开启全新无损音乐体验！
 
 ---
